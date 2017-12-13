@@ -4,21 +4,32 @@
 #include "stdafx.h"
 #include "stdint.h"
 #include "math.h"
+#include "arduino.h"
 
-#define TOTAL_SQUARES 4
-#define FADE_LENGTH 10
-#define SPIRAL_NUMBER 10
-#define ALTERNATE_DELAY 50
-#define PULSE_NUMBER 200
+#define FADE_LENGTH 10 // number of steps in the fade function
+#define FADE_SPEED 200 // time in milliseconds between fade updates
 
 class colourClass;
+
+struct ColourDifference
+{
+	int8_t dRed;
+	int8_t dGreen;
+	int8_t dBlue;
+};
 
 uint32_t strip1[100];
 uint32_t strip2[100];
 uint32_t strip3[100];
 uint32_t strip4[100];
 
-int HyperSpaceDelay[10] = { 1000, 500, 250, 125, 62, 30, 15, 7, 3, 2 };
+// Fade global variables
+ColourDifference fadeColourDifference;
+int fadecount;
+bool incrementFlag;
+colourClass currentFadeColour;
+bool setupFlag;
+unsigned long LastFadeTime;
 
 class colourClass
 {
@@ -50,11 +61,11 @@ public:
 		return fullcolour;
 	}
 
-	uint32_t SubtractColourDifference(colourClass colourDifference)
+	uint32_t SubtractColourDifference(ColourDifference colourDifference)
 	{
-		int newRed = GetRed() - colourDifference.GetRed();
-		int newGreen = GetGreen() - colourDifference.GetGreen();
-		int newBlue = GetBlue() - colourDifference.GetBlue();
+		int newRed = GetRed() - colourDifference.dRed;
+		int newGreen = GetGreen() - colourDifference.dGreen;
+		int newBlue = GetBlue() - colourDifference.dBlue;
 
 		SetColour(newRed, newGreen, newBlue);
 
@@ -81,7 +92,7 @@ public:
 		return (fullcolour & 0x000000FF);
 	}
 
-	colourClass GetDifferenceColour(colourClass newColour, int length)
+	ColourDifference GetDifferenceColour(colourClass newColour, int length)
 	{
 		uint8_t red1 = GetRed();
 		uint8_t green1 = GetGreen();
@@ -91,155 +102,83 @@ public:
 		uint8_t green2 = newColour.GetGreen();
 		uint8_t blue2 = newColour.GetBlue();
 
-		uint8_t dRed = (red1 - red2) / length;
-		uint8_t dGreen = (green1 - green2) / length;
-		uint8_t dBlue = (blue1 - blue2) / length;
+		ColourDifference colourdifference;
 
-		colourClass colourDiff;
-		colourDiff.SetColour(dRed, dGreen, dBlue);
+		colourdifference.dRed = (red1 - red2) / length;
+		colourdifference.dGreen = (green1 - green2) / length;
+		colourdifference.dBlue = (blue1 - blue2) / length;
 
-		return colourDiff;
+		return colourdifference;
 	}
 
 private:
 	uint32_t fullcolour;
 };
 
-uint32_t* AllSquares[TOTAL_SQUARES];
+uint32_t* AllSquares[4];
 
-/*void trailMoveON()
+
+void FadeSetup(colourClass colour1, colourClass colour2)
 {
-	int temp;
+	fadeColourDifference = colour1.GetDifferenceColour(colour2, FADE_LENGTH);
+	fadecount = 0;
+	incrementFlag = 1;
+	currentFadeColour = colour2;
+	setupFlag = 1;
+	//LastFadeTime = now;
+}
 
-	pixelNum++;
-	if (pixelNum == 100)
-		pixelNum = 0;
-
-	for (int i = 0; i < 8; i++)
-	{
-		temp = pixelNum - i;
-		if (temp < 0)
-			temp = 100 + temp;
-
-		LEDstrip[temp] = trailColourArray[i];
-	}
-}*/
-
-
-void FadeFunction(colourClass colour1, colourClass colour2)
+void FadePoll()
 {
-	colourClass colourDifference = colour1.GetDifferenceColour(colour2, FADE_LENGTH);
-	uint32_t tempColour;
+	if (!setupFlag)
+		FadeSetup();
 
-	for (int i = 0; i < FADE_LENGTH; i++)
+	unsigned long currentFadeTime = millis();
+	if ((currentFadeTime - LastFadeTime) >= FADE_SPEED)
 	{
-		tempColour = colour2.AddColourDifference(colourDifference);
-		
-		for (int j = 0; j < 4; j++)
+		switch (incrementFlag)
 		{
-			AllSquares[j][i] = tempColour;
-		}	
+		case 1:
+			currentFadeColour.AddColourDifference(fadeColourDifference);
+			SetAll(currentFadeColour);
+			ShowAll(0);
+			break;
+		case 0:
+			currentFadeColour.SubtractColourDifference(fadeColourDifference);
+			SetAll(currentFadeColour);
+			ShowAll(0);
+			break;
+		}
+		fadecount++;
+		if (fadecount == FADE_LENGTH)
+		{
+			fadecount = 0;
+			incrementFlag = !incrementFlag;
+		}
 	}
-	for (int i = 0; i < FADE_LENGTH; i++)
-	{
-		tempColour = colour2.SubtractColourDifference(colourDifference);
+	LastFadeTime = currentFadeTime;
+}
 
-		for (int j = 0; j < 4; j++)
+void SetAll(colourClass colour)
+{
+	for (int square = 0; square < 4; square++)
+	{
+		for (int pixel = 0; pixel < AllSquares.numPixels(); pixel++)
 		{
-			AllSquares[j][i] = tempColour;
+			AllSquares[square]->setPixel(pixel, colour.GetColour());
 		}
 	}
 }
 
-void SpiralFunction(colourClass colour1, colourClass colour2)
+void ShowAll(int stripdelay)
 {
-	colourClass colourDifference = colour1.GetDifferenceColour(colour2, SPIRAL_NUMBER);
-	uint32_t tempColour;
-
-	for (int k = 0; k < SPIRAL_NUMBER; k++)
+	for (int square = 0; square < 4; square++)
 	{
-		tempColour = colour2.AddColourDifference(colourDifference);
-		for (int i = 0; i < 4; i++)
-		{
-			for (int j = 0; j < 100; j++)
-			{
-				AllSquares[i][j] = tempColour;
-				// LEDStripArray[i].show();
-				//delay(SPIRAL_DELAY);
-			}
-		}
-	}
-	for (int k = 0; k < SPIRAL_NUMBER; k++)
-	{
-		tempColour = colour2.SubtractColourDifference(colourDifference);
-		for (int i = 0; i < 4; i++)
-		{
-			for (int j = 0; j < 100; j++)
-			{
-				AllSquares[i][j] = tempColour;
-				//delay(SPIRAL_DELAY);
-			}
-		}
+		AllSquares[square]->show();
+		delay(stripdelay);
 	}
 }
 
-void HyperSpaceJump(colourClass colour1, colourClass colour2)
-{
-	for (int i = 0; i < 10; i++)
-	{
-		for (int j = 0; j < 4; j++)
-		{
-			for (int pixel = 0; pixel < 0; pixel++)
-			{
-				AllSquares[j][pixel] = colour2.GetColour();
-			}
-			//delay(HyperSpaceDelay[i];
-			for (int pixel = 0; pixel < 0; pixel++)
-			{
-				AllSquares[j][pixel] = 0;
-			}
-		}
-	}
-}
-
-void Pulse(colourClass colour1, int frequency)
-{
-	for (int sampleNumber = 0; sampleNumber < PULSE_NUMBER; sampleNumber++)
-	{
-		for (int square = 0; square < 4; square++)
-		{
-			for (int pixel = 0; pixel < 100; pixel++)
-			{
-				AllSquares[square][pixel] = colour1.GetColour() + colour1.GetColour()*sin(2* 3.14 * sampleNumber / PULSE_NUMBER);
-			}
-		}
-	}	
-}
-
-void Alternate(colourClass colour1, colourClass colour2)
-{
-	for (int pixel = 0; pixel < 100; pixel++)
-	{
-		AllSquares[0][pixel] = colour1.GetColour();
-		AllSquares[2][pixel] = colour1.GetColour();
-
-		AllSquares[1][pixel] = colour2.GetColour();
-		AllSquares[3][pixel] = colour2.GetColour();
-	}
-
-	//delay(ALTERNATE_DELAY);
-
-	for (int pixel = 0; pixel < 100; pixel++)
-	{
-		AllSquares[0][pixel] = colour2.GetColour();
-		AllSquares[2][pixel] = colour2.GetColour();
-
-		AllSquares[1][pixel] = colour1.GetColour();
-		AllSquares[3][pixel] = colour1.GetColour();
-	}
-
-	//delay(ALTERNATE_DELAY);
-}
 
 void setup()
 {
@@ -261,6 +200,11 @@ int main()
 	SpiralFunction(colour1, colour2);*/
 
 	setup();
+
+	while (1)
+	{
+		FadePoll();
+	}
 
 	return 0;
 }
